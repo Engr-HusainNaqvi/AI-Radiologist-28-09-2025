@@ -1,5 +1,5 @@
 import streamlit as st
-from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration, AutoModelForImageTextToText, BitsAndBytesConfig
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoModelForImageTextToText, BitsAndBytesConfig
 from qwen_vl_utils import process_vision_info
 from PIL import Image
 import torch
@@ -16,10 +16,9 @@ quant_config = BitsAndBytesConfig(
 @st.cache_resource
 def load_lingshu_model():
     processor = AutoProcessor.from_pretrained("lingshu-medical-mllm/Lingshu-7B")
-    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
         "lingshu-medical-mllm/Lingshu-7B",
         quantization_config=quant_config,
-        attn_implementation="flash_attention_2",
         device_map="auto"
     )
     return processor, model
@@ -35,11 +34,10 @@ def load_medgemma_model():
     )
     return processor, model
 
-# Function to generate report using a model
+# Function to generate report using a model (adapted for each)
 def generate_report(model, processor, image, prompt, is_lingshu=False):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     messages = [
-        {"role": "system", "content": [{"type": "text", "text": "You are a helpful medical assistant."}]},
         {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt + " Generate a diagnostic report."}]}
     ]
 
@@ -48,23 +46,18 @@ def generate_report(model, processor, image, prompt, is_lingshu=False):
         text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
         image_inputs, video_inputs = process_vision_info(messages)
         inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt").to(device)
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, max_new_tokens=512)
+        generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+        return processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
     else:
         # MedGemma processing
         inputs = processor.apply_chat_template(messages, add_generation_prompt=True, return_dict=True, return_tensors="pt").to(device)
-
-    with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=512, do_sample=False)
-    
-    # Trim and decode
-    if is_lingshu:
-        generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-        decoded = processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
-    else:
+        with torch.no_grad():
+            generated_ids = model.generate(**inputs, max_new_tokens=512, do_sample=False)
         input_len = inputs["input_ids"].shape[-1]
         generated_ids = generated_ids[0][input_len:]
-        decoded = processor.decode(generated_ids, skip_special_tokens=True)
-
-    return decoded
+        return processor.decode(generated_ids, skip_special_tokens=True)
 
 # Streamlit app interface
 st.title("AI-Based Doctor Companion: Multi-Modality Medical Image Analysis")
