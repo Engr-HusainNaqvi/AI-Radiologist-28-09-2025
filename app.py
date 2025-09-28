@@ -1,5 +1,6 @@
 import streamlit as st
-from transformers import AutoProcessor, AutoModelForVision2Seq, BitsAndBytesConfig
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoModelForImageTextToText, BitsAndBytesConfig
+from qwen_vl_utils import process_vision_info
 from PIL import Image
 import torch
 
@@ -15,9 +16,10 @@ quant_config = BitsAndBytesConfig(
 @st.cache_resource
 def load_lingshu_model():
     processor = AutoProcessor.from_pretrained("lingshu-medical-mllm/Lingshu-7B")
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = Qwen2VLForConditionalGeneration.from_pretrained(
         "lingshu-medical-mllm/Lingshu-7B",
         quantization_config=quant_config,
+        attn_implementation="flash_attention_2",
         device_map="auto"
     )
     return processor, model
@@ -26,16 +28,25 @@ def load_lingshu_model():
 @st.cache_resource
 def load_medgemma_model():
     processor = AutoProcessor.from_pretrained("google/medgemma-27b-it")
-    model = AutoModelForVision2Seq.from_pretrained(
+    model = AutoModelForImageTextToText.from_pretrained(
         "google/medgemma-27b-it",
         quantization_config=quant_config,
         device_map="auto"
     )
     return processor, model
 
-# Function to generate report using a model
-def generate_report(model, processor, image, prompt):
-    inputs = processor(prompt + " Generate a diagnostic report:", image, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+# Function to generate report using a model (adapted for each)
+def generate_report(model, processor, image, prompt, is_lingshu=False):
+    if is_lingshu:
+        # Lingshu-specific processing
+        messages = [{"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt + " Generate a diagnostic report."}]}]
+        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        image_inputs, _ = process_vision_info(messages)
+        inputs = processor(text=[text], images=image_inputs, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        # MedGemma processing
+        inputs = processor(prompt + " Generate a diagnostic report:", image, return_tensors="pt").to("cuda" if torch.cuda.is_available() else "cpu")
+    
     with torch.no_grad():
         outputs = model.generate(**inputs, max_new_tokens=512)
     return processor.decode(outputs[0], skip_special_tokens=True)
@@ -58,7 +69,7 @@ if uploaded_file is not None:
             medgemma_processor, medgemma_model = load_medgemma_model()
 
             # Generate reports
-            lingshu_report = generate_report(lingshu_model, lingshu_processor, image, prompt)
+            lingshu_report = generate_report(lingshu_model, lingshu_processor, image, prompt, is_lingshu=True)
             medgemma_report = generate_report(medgemma_model, medgemma_processor, image, prompt)
 
         st.subheader("Lingshu-7B Generated Report")
