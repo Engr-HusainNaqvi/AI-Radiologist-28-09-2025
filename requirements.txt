@@ -1,6 +1,7 @@
 streamlit>=1.38.0
-transformers>=4.45.1
+git+https://github.com/huggingface/transformers.git
 torch>=2.4.1
 pillow>=10.4.0
 bitsandbytes>=0.43.3
 accelerate>=0.45.1
+qwen-vl-utils>=0.0.5  # Required for Lingshu-7B vision processing
