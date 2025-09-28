@@ -1,16 +1,12 @@
 import streamlit as st
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoModelForImageTextToText, BitsAndBytesConfig
+from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoModelForImageTextToText
 from qwen_vl_utils import process_vision_info
 from PIL import Image
 import torch
 
-# Set up quantization config for memory efficiency
-quant_config = BitsAndBytesConfig(
-    load_in_4bit=True,
-    bnb_4bit_use_double_quant=True,
-    bnb_4bit_quant_type="nf4",
-    bnb_4bit_compute_dtype=torch.bfloat16
-)
+# Determine dtype based on device
+device = "cuda" if torch.cuda.is_available() else "cpu"
+dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
 # Load Lingshu-7B model and processor
 @st.cache_resource
@@ -18,7 +14,7 @@ def load_lingshu_model():
     processor = AutoProcessor.from_pretrained("lingshu-medical-mllm/Lingshu-7B")
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         "lingshu-medical-mllm/Lingshu-7B",
-        quantization_config=quant_config,
+        torch_dtype=dtype,
         device_map="auto"
     )
     return processor, model
@@ -29,14 +25,13 @@ def load_medgemma_model():
     processor = AutoProcessor.from_pretrained("google/medgemma-27b-it")
     model = AutoModelForImageTextToText.from_pretrained(
         "google/medgemma-27b-it",
-        quantization_config=quant_config,
+        torch_dtype=dtype,
         device_map="auto"
     )
     return processor, model
 
-# Function to generate report using a model (adapted for each)
+# Function to generate report using a model
 def generate_report(model, processor, image, prompt, is_lingshu=False):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     messages = [
         {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt + " Generate a diagnostic report."}]}
     ]
@@ -66,7 +61,7 @@ uploaded_file = st.file_uploader("Upload a medical image (X-ray, CT, MRI, etc.)"
 
 if uploaded_file is not None:
     image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Image", use_column_width=True)
+    st.image(image, caption="Uploaded Image", use_container_width=True)
 
     prompt = st.text_area("Enter additional context or prompt for analysis:", "Describe the findings in this medical image.")
 
