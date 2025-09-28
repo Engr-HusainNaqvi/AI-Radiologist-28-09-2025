@@ -11,24 +11,32 @@ dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 # Load Lingshu-7B model and processor
 @st.cache_resource
 def load_lingshu_model():
-    processor = AutoProcessor.from_pretrained("lingshu-medical-mllm/Lingshu-7B")
-    model = Qwen2VLForConditionalGeneration.from_pretrained(
-        "lingshu-medical-mllm/Lingshu-7B",
-        torch_dtype=dtype,
-        device_map="auto"
-    )
-    return processor, model
+    try:
+        processor = AutoProcessor.from_pretrained("lingshu-medical-mllm/Lingshu-7B")
+        model = Qwen2VLForConditionalGeneration.from_pretrained(
+            "lingshu-medical-mllm/Lingshu-7B",
+            torch_dtype=dtype,
+            device_map="auto"
+        )
+        return processor, model
+    except Exception as e:
+        st.error(f"Error loading Lingshu-7B model: {str(e)}")
+        return None, None
 
 # Load MedGemma-27B-IT model and processor
 @st.cache_resource
 def load_medgemma_model():
-    processor = AutoProcessor.from_pretrained("google/medgemma-27b-it")
-    model = AutoModelForImageTextToText.from_pretrained(
-        "google/medgemma-27b-it",
-        torch_dtype=dtype,
-        device_map="auto"
-    )
-    return processor, model
+    try:
+        processor = AutoProcessor.from_pretrained("google/medgemma-27b-it")
+        model = AutoModelForImageTextToText.from_pretrained(
+            "google/medgemma-27b-it",
+            torch_dtype=dtype,
+            device_map="auto"
+        )
+        return processor, model
+    except Exception as e:
+        st.error(f"Error loading MedGemma-27B-IT model: {str(e)}")
+        return None, None
 
 # Function to generate report using a model
 def generate_report(model, processor, image, prompt, is_lingshu=False):
@@ -71,12 +79,21 @@ if uploaded_file is not None:
             lingshu_processor, lingshu_model = load_lingshu_model()
             medgemma_processor, medgemma_model = load_medgemma_model()
 
-            # Generate reports
-            lingshu_report = generate_report(lingshu_model, lingshu_processor, image, prompt, is_lingshu=True)
-            medgemma_report = generate_report(medgemma_model, medgemma_processor, image, prompt)
+            if lingshu_model is None or medgemma_model is None:
+                st.error("Model loading failed. This may be due to insufficient resources on the hosting platform. Consider running locally on a machine with at least 16GB RAM and a GPU.")
+                st.stop()
 
-        st.subheader("Lingshu-7B Generated Report")
-        st.write(lingshu_report)
+            try:
+                # Generate reports
+                lingshu_report = generate_report(lingshu_model, lingshu_processor, image, prompt, is_lingshu=True)
+                medgemma_report = generate_report(medgemma_model, medgemma_processor, image, prompt)
+            except Exception as e:
+                st.error(f"Error generating reports: {str(e)}. This could be due to memory constraints. Please try running the app locally with adequate hardware.")
 
-        st.subheader("MedGemma-27B-IT Generated Report")
-        st.write(medgemma_report)
+        if 'lingshu_report' in locals():
+            st.subheader("Lingshu-7B Generated Report")
+            st.write(lingshu_report)
+
+        if 'medgemma_report' in locals():
+            st.subheader("MedGemma-27B-IT Generated Report")
+            st.write(medgemma_report)
