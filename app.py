@@ -1,99 +1,104 @@
 import streamlit as st
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration, AutoModelForImageTextToText
-from qwen_vl_utils import process_vision_info
 from PIL import Image
 import torch
+import torch.nn as nn
+from torchvision import transforms, models
+import os
 
-# Determine dtype based on device
+st.title("Multi-Modality Clinical AI Reporting System")
+st.write("Upload a medical image and select modality to generate an AI-powered radiology report.")
+
+modalities = {
+    "X-ray": "data/XRAY",
+    "CT": "data/CT",
+    "Mammography": "data/MAMMO",
+    "Ultrasound": "data/US",
+    "MRI": "data/MRI"
+}
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
-dtype = torch.bfloat16 if torch.cuda.is_available() else torch.float32
 
-# Load Lingshu-7B model and processor
+def load_report_dict(modality_folder):
+    report_dict = {}
+    for fname in os.listdir(modality_folder):
+        if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
+            txt_path = os.path.splitext(fname)[0]+'.txt'
+            txt_path_full = os.path.join(modality_folder, txt_path)
+            if os.path.exists(txt_path_full):
+                with open(txt_path_full, "r", encoding="utf8") as f:
+                    report_dict[fname] = f.read().strip()
+    return report_dict
+
+def load_dataset(modality_folder):
+    images, labels = [], []
+    for fname in os.listdir(modality_folder):
+        if fname.lower().endswith(('.jpg','.jpeg','.png')):
+            img_path = os.path.join(modality_folder, fname)
+            txt_path = os.path.splitext(img_path)[0]+'.txt'
+            if os.path.exists(txt_path):
+                images.append(img_path)
+                with open(txt_path, "r", encoding="utf8") as f:
+                    labels.append(f.read().strip())
+    label_names = list(set(labels))
+    label2idx = {name: i for i, name in enumerate(label_names)}
+    idx2label = {i: name for name, i in label2idx.items()}
+    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor()])
+    return images, labels, label2idx, idx2label, tf
+
 @st.cache_resource
-def load_lingshu_model():
-    try:
-        processor = AutoProcessor.from_pretrained("lingshu-medical-mllm/Lingshu-7B")
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            "lingshu-medical-mllm/Lingshu-7B",
-            torch_dtype=dtype,
-            device_map="auto"
-        )
-        return processor, model
-    except Exception as e:
-        st.error(f"Error loading Lingshu-7B model: {str(e)}")
-        return None, None
+def train_model(images, labels, label2idx, tf):
+    if len(set(labels)) < 2 or not images: return None
+    model = models.resnet18(weights="IMAGENET1K_V1")
+    model.fc = nn.Linear(model.fc.in_features, len(label2idx))
+    model = model.to(device)
+    model.train()
+    X = []
+    y = []
+    for img_path, label in zip(images, labels):
+        img = tf(Image.open(img_path).convert("RGB"))
+        X.append(img.unsqueeze(0))
+        y.append(label2idx[label])
+    X = torch.cat(X).to(device)
+    y = torch.tensor(y).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    loss_fn = nn.CrossEntropyLoss()
+    for _ in range(3):
+        optimizer.zero_grad()
+        outputs = model(X)
+        loss = loss_fn(outputs, y)
+        loss.backward()
+        optimizer.step()
+    model.eval()
+    return model
 
-# Load MedGemma-27B-IT model and processor
-@st.cache_resource
-def load_medgemma_model():
-    try:
-        processor = AutoProcessor.from_pretrained("google/medgemma-27b-it")
-        model = AutoModelForImageTextToText.from_pretrained(
-            "google/medgemma-27b-it",
-            torch_dtype=dtype,
-            device_map="auto"
-        )
-        return processor, model
-    except Exception as e:
-        st.error(f"Error loading MedGemma-27B-IT model: {str(e)}")
-        return None, None
+modality = st.selectbox("Select Modality", list(modalities.keys()))
+uploaded = st.file_uploader("Upload Image (.jpg, .jpeg, .png)", type=["jpg", "jpeg", "png"])
+modality_path = modalities[modality]
+report_dict = load_report_dict(modality_path)
+images, labels, label2idx, idx2label, tf = load_dataset(modality_path)
+model = train_model(images, labels, label2idx, tf)
 
-# Function to generate report using a model
-def generate_report(model, processor, image, prompt, is_lingshu=False):
-    messages = [
-        {"role": "user", "content": [{"type": "image", "image": image}, {"type": "text", "text": prompt + " Generate a diagnostic report."}]}
-    ]
+def clinical_report(uploaded_image, report_dict, model, label2idx, idx2label, tf, threshold=0.75):
+    if uploaded_image is None: return ""
+    imgname = uploaded_image.name
+    img = Image.open(uploaded_image).convert("RGB")
+    img_tensor = tf(img).unsqueeze(0).to(device)
+    with torch.no_grad():
+        logits = model(img_tensor)
+        probs = torch.softmax(logits, dim=1)
+        conf, idx = torch.max(probs, 1)
+        label = idx2label[idx.item()]
+    if imgname in report_dict and conf.item() > threshold:
+        return report_dict[imgname]
+    elif conf.item() <= threshold:
+        suggestions = ", ".join(list(label2idx.keys())[:3])
+        return f"Possible findings: {label} (suggestions: {suggestions}). Further expert review recommended."
+    return f"AI Model Prediction: {label}"
 
-    if is_lingshu:
-        # Lingshu-specific processing
-        text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        image_inputs, video_inputs = process_vision_info(messages)
-        inputs = processor(text=[text], images=image_inputs, videos=video_inputs, padding=True, return_tensors="pt").to(device)
-        with torch.no_grad():
-            generated_ids = model.generate(**inputs, max_new_tokens=512)
-        generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
-        return processor.batch_decode(generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
+if uploaded:
+    st.image(uploaded, use_column_width=True)
+    if model:
+        report = clinical_report(uploaded, report_dict, model, label2idx, idx2label, tf)
+        st.markdown(f"### Radiology Report:\n{report}")
     else:
-        # MedGemma processing
-        inputs = processor.apply_chat_template(messages, add_generation_prompt=True, return_dict=True, return_tensors="pt").to(device)
-        with torch.no_grad():
-            generated_ids = model.generate(**inputs, max_new_tokens=512, do_sample=False)
-        input_len = inputs["input_ids"].shape[-1]
-        generated_ids = generated_ids[0][input_len:]
-        return processor.decode(generated_ids, skip_special_tokens=True)
-
-# Streamlit app interface
-st.title("AI-Based Doctor Companion: Multi-Modality Medical Image Analysis")
-
-uploaded_file = st.file_uploader("Upload a medical image (X-ray, CT, MRI, etc.)", type=["jpg", "png", "jpeg"])
-
-if uploaded_file is not None:
-    image = Image.open(uploaded_file)
-    st.image(image, caption="Uploaded Image", use_container_width=True)
-
-    prompt = st.text_area("Enter additional context or prompt for analysis:", "Describe the findings in this medical image.")
-
-    if st.button("Generate Reports"):
-        with st.spinner("Loading models and generating reports..."):
-            # Load models
-            lingshu_processor, lingshu_model = load_lingshu_model()
-            medgemma_processor, medgemma_model = load_medgemma_model()
-
-            if lingshu_model is None or medgemma_model is None:
-                st.error("Model loading failed. This may be due to insufficient resources on the hosting platform. Consider running locally on a machine with at least 16GB RAM and a GPU.")
-                st.stop()
-
-            try:
-                # Generate reports
-                lingshu_report = generate_report(lingshu_model, lingshu_processor, image, prompt, is_lingshu=True)
-                medgemma_report = generate_report(medgemma_model, medgemma_processor, image, prompt)
-            except Exception as e:
-                st.error(f"Error generating reports: {str(e)}. This could be due to memory constraints. Please try running the app locally with adequate hardware.")
-
-        if 'lingshu_report' in locals():
-            st.subheader("Lingshu-7B Generated Report")
-            st.write(lingshu_report)
-
-        if 'medgemma_report' in locals():
-            st.subheader("MedGemma-27B-IT Generated Report")
-            st.write(medgemma_report)
+        st.warning("No model available (not enough training data for this modality).")
