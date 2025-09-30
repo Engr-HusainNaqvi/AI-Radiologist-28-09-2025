@@ -22,7 +22,7 @@ def load_report_dict(modality_folder):
     report_dict = {}
     for fname in os.listdir(modality_folder):
         if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
-            txt_path = os.path.splitext(fname)[0]+'.txt'
+            txt_path = os.path.splitext(fname)[0] + '.txt'
             txt_path_full = os.path.join(modality_folder, txt_path)
             if os.path.exists(txt_path_full):
                 with open(txt_path_full, "r", encoding="utf8") as f:
@@ -32,9 +32,9 @@ def load_report_dict(modality_folder):
 def load_dataset(modality_folder):
     images, labels = [], []
     for fname in os.listdir(modality_folder):
-        if fname.lower().endswith(('.jpg','.jpeg','.png')):
+        if fname.lower().endswith(('.jpg', '.jpeg', '.png')):
             img_path = os.path.join(modality_folder, fname)
-            txt_path = os.path.splitext(img_path)[0]+'.txt'
+            txt_path = os.path.splitext(img_path)[0] + '.txt'
             if os.path.exists(txt_path):
                 images.append(img_path)
                 with open(txt_path, "r", encoding="utf8") as f:
@@ -42,20 +42,20 @@ def load_dataset(modality_folder):
     label_names = list(set(labels))
     label2idx = {name: i for i, name in enumerate(label_names)}
     idx2label = {i: name for name, i in label2idx.items()}
-    tf = transforms.Compose([transforms.Resize((224,224)), transforms.ToTensor()])
+    tf = transforms.Compose([transforms.Resize((224, 224)), transforms.ToTensor()])
     return images, labels, label2idx, idx2label, tf
 
 @st.cache_resource
-def train_model(images, labels, label2idx, tf):
-    if len(set(labels)) < 2 or not images: return None
+def train_model(images, labels, label2idx, _tf):
+    if len(set(labels)) < 2 or not images:
+        return None
     model = models.resnet18(weights="IMAGENET1K_V1")
     model.fc = nn.Linear(model.fc.in_features, len(label2idx))
     model = model.to(device)
     model.train()
-    X = []
-    y = []
+    X, y = [], []
     for img_path, label in zip(images, labels):
-        img = tf(Image.open(img_path).convert("RGB"))
+        img = _tf(Image.open(img_path).convert("RGB"))
         X.append(img.unsqueeze(0))
         y.append(label2idx[label])
     X = torch.cat(X).to(device)
